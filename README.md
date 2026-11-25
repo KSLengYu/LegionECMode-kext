@@ -1,70 +1,99 @@
 # LegionECMode.kext
 
-适用于 **Lenovo Legion（拯救者）macOS 黑苹果**的自研内核级 **EC 功耗模式免密切换驱动**（IOKit Kext）。
-
-> 如果你在找 **Lenovo Legion 5 Pro（2025，Core Ultra 7 255HX + RTX 5070 Laptop）** 的完整 OpenCore EFI 配置，请移步：[KSLengYu/Legion5Pro-2025-Hackintosh](https://github.com/KSLengYu/Legion5Pro-2025-Hackintosh)。
+[中文](#中文) | [English](#english)
 
 ---
 
-## 目录结构
+## 中文
 
-```text
-.
-├── LICENSE
-├── README.md
-└── LegionECMode/
-    ├── LegionECMode.cpp       # IOKit 内核驱动源码
-    ├── Info.plist
-    ├── build.sh               # 本地编译脚本
-    └── prebuilt/
-        └── LegionECMode.kext  # 已编译成品（可直接放入 EFI/OC/Kexts）
-```
+给 Lenovo Legion（拯救者）macOS 用的 IOKit 驱动，在内核里直接调用 ACPI 的 `_SB.GZFD.WMAA` 读写 EC 功耗模式，不需要用户态 `sudo`。
 
----
+目前在 **Lenovo Legion 5 Pro 2025（Core Ultra 7 255HX）+ macOS 26.7.2** 上测试通过。配套的 OpenCore EFI 配置在另一个仓库：[KSLengYu/Legion5Pro-2025-Hackintosh](https://github.com/KSLengYu/Legion5Pro-2025-Hackintosh)。
 
-## 工作原理
+### 实现方式
 
-传统通过用户态 ACPI 工具调用联想功耗模式切换往往需要 `sudo` 提权或频繁输入密码；`LegionECMode.kext` 直接在内核层对接主板 DSDT 中的 `_SB.GZFD.WMAA` 接口：
+驱动加载后查找 `IOACPIPlane:/_SB/GZFD`，并注册一个普通用户可读写（`CTLFLAG_ANYBODY`）的 sysctl 节点 `debug.legionec.mode`：
 
-- 启动时通过 `IORegistryEntry::fromPath("IOACPIPlane:/_SB/GZFD")` 绑定主板 ACPI WMI 设备。
-- 注册内核 sysctl 接口 `debug.legionec.mode`（开启普通用户读写权限，并在内核里严格校验白名单 `1` / `2` / `3`）：
-  - **读取**：调用 `_SB.GZFD.WMAA(0, 0x2D, 0)` 返回当前 EC 模式（`1` = 安静、`2` = 均衡、`3` = 狂暴、`0xFF` = 自定义）。
-  - **写入**：调用 `_SB.GZFD.WMAA(0, 0x2C, mode)` 通知主板 EC 实时切换风扇策略、整机功耗墙与电源指示灯颜色。
+- 读取：调用 `_SB.GZFD.WMAA(0, 0x2D, 0)`，返回当前 EC 模式（`1` 安静 / `2` 均衡 / `3` 狂暴 / `0xFF` 自定义）。
+- 写入：仅放行 `1` / `2` / `3`，调用 `_SB.GZFD.WMAA(0, 0x2C, mode)`，由 EC 同步切换功耗墙、风扇策略和电源键灯色。
 
----
+### 安装与使用
 
-## 安装与使用
+把 `LegionECMode/prebuilt/LegionECMode.kext`（或自己编译出来的 kext）放到 `EFI/OC/Kexts/`，在 `config.plist -> Kernel -> Add` 里启用后重启。
 
-1. 将 `LegionECMode/prebuilt/LegionECMode.kext`（或自行编译出的 `build/LegionECMode.kext`）拷贝到 OpenCore 的 `EFI/OC/Kexts/` 目录。
-2. 在 `EFI/OC/config.plist -> Kernel -> Add` 中启用 `LegionECMode.kext`。
-3. 重启进系统后，无需 `sudo`，直接在终端即可查询和切换模式：
+进系统后可以直接通过 `sysctl` 读写，不用加 `sudo`：
 
 ```bash
-# 查看当前 EC 模式（1=安静, 2=均衡, 3=狂暴）
+# 查看当前模式
 sysctl debug.legionec.mode
 
-# 免密切换 EC 模式
-sysctl -w debug.legionec.mode=1   # 安静模式
-sysctl -w debug.legionec.mode=2   # 均衡模式
-sysctl -w debug.legionec.mode=3   # 狂暴模式
+# 切换模式（1=安静, 2=均衡, 3=狂暴）
+sysctl -w debug.legionec.mode=1
+sysctl -w debug.legionec.mode=2
+sysctl -w debug.legionec.mode=3
 ```
 
-> **兼容性说明**：使用前请确认你的联想机型 DSDT 中存在 `_SB.GZFD.WMAA`，且支持 `WMAA(0, 0x2C, 1/2/3)` 与 `WMAA(0, 0x2D, 0)`（已在 Legion 5 Pro 2025 / Core Ultra 7 255HX 上实测通过）。
+前提是机器 DSDT 里有 `_SB.GZFD.WMAA` 且支持 `0x2C` / `0x2D` 参数，其他联想机型使用前建议先核对自己的 DSDT。
 
----
+### 编译
 
-## 从源码编译
-
-需要已安装 Xcode 或 Apple Command Line Tools（含 macOS SDK）：
+装好 Xcode 或 Command Line Tools 后直接运行构建脚本：
 
 ```bash
-cd LegionECMode && ./build.sh
+cd LegionECMode
+./build.sh
 ```
 
-也可以直接前往 [Releases](https://github.com/KSLengYu/LegionECMode-kext/releases) 下载打包好的 `LegionECMode-v1.0.zip`。
+源码在 `LegionECMode/LegionECMode.cpp`，编译脚本在 `LegionECMode/build.sh`。也可以直接去 [Releases](https://github.com/KSLengYu/LegionECMode-kext/releases) 下载打包好的 `LegionECMode-v1.0.zip`。
+
+### License
+
+MIT
 
 ---
 
-## License
+## English
 
-MIT License
+An IOKit kext for Lenovo Legion Hackintosh builds that reads and switches EC thermal/power modes via ACPI (`_SB.GZFD.WMAA`) in kernel space, without requiring `sudo` in userspace.
+
+Tested on a **Lenovo Legion 5 Pro (2025, Core Ultra 7 255HX) running macOS 26.7.2**. The OpenCore EFI for this machine is in [KSLengYu/Legion5Pro-2025-Hackintosh](https://github.com/KSLengYu/Legion5Pro-2025-Hackintosh).
+
+### How it works
+
+On start, the kext looks up `IOACPIPlane:/_SB/GZFD` and registers `debug.legionec.mode` with `CTLFLAG_ANYBODY`:
+
+- Read: calls `_SB.GZFD.WMAA(0, 0x2D, 0)` and returns the current EC mode (`1` = Quiet, `2` = Balanced, `3` = Performance, `0xFF` = Custom).
+- Write: accepts only `1`, `2`, or `3` and calls `_SB.GZFD.WMAA(0, 0x2C, mode)`. The EC updates the power limits, fan curve, and power LED color accordingly.
+
+### Install & usage
+
+Copy `LegionECMode/prebuilt/LegionECMode.kext` (or a self-built kext) to `EFI/OC/Kexts/`, enable it under `config.plist -> Kernel -> Add`, and reboot.
+
+Once booted, query or switch modes directly without `sudo`:
+
+```bash
+# Read current mode
+sysctl debug.legionec.mode
+
+# Switch mode (1=Quiet, 2=Balanced, 3=Performance)
+sysctl -w debug.legionec.mode=1
+sysctl -w debug.legionec.mode=2
+sysctl -w debug.legionec.mode=3
+```
+
+Requires `_SB.GZFD.WMAA` with `0x2C` / `0x2D` support in your machine's DSDT. Check your DSDT before using on other Legion models.
+
+### Build from source
+
+With Xcode or Apple Command Line Tools installed:
+
+```bash
+cd LegionECMode
+./build.sh
+```
+
+Source is in `LegionECMode/LegionECMode.cpp` and build script in `LegionECMode/build.sh`. Prebuilt `LegionECMode-v1.0.zip` is also available in [Releases](https://github.com/KSLengYu/LegionECMode-kext/releases).
+
+### License
+
+MIT
